@@ -5,7 +5,7 @@ from datetime import date
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-TOKEN = "8679806194:AAH35zUFUYhnHWnL210bRwrcTsD_p3ZZM9A"  # <-- вставь токен от @BotFather
+TOKEN = "8679806194:AAH35zUFUYhnHWnL210bRwrcTsD_p3ZZM9A"
 
 BALANCE_FILE = "balances.json"
 BONUS_FILE = "bonuses.json"
@@ -135,11 +135,9 @@ def is_private(update: Update) -> bool:
 # ====== ОБРАБОТЧИКИ ======
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Молчим везде — никаких подсказок
     pass
 
 async def handle_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Работает только в личном чате
     if not is_private(update):
         return
 
@@ -155,12 +153,11 @@ async def handle_admin_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     add_balance(user_id, amount)
     await update.message.reply_text(
-        f"✅ Выдано *{amount}* монет!\n💰 Баланс: *{get_balance(user_id)}* монет",
-        parse_mode="Markdown"
+        f"✅ Выдано <b>{amount}</b> монет!\n💰 Баланс: <b>{get_balance(user_id)}</b> монет",
+        parse_mode="HTML"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Команды работают только в группе
     if not is_group(update):
         return
 
@@ -174,12 +171,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Баланс
     if text_lower == "б":
         balance = get_balance(user_id)
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎁 Получить бонус (2500)", callback_data=f"bonus_{user_id}")]
-        ])
+
+        # Кнопка бонуса — активная или заблокированная
+        if can_claim_bonus(user_id):
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎁 Получить бонус (2500)", callback_data=f"bonus_{user_id}")]
+            ])
+        else:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏰ Бонус уже получен — приходи завтра", callback_data=f"bonus_unavailable_{user_id}")]
+            ])
+
         await msg.reply_text(
-            f"💰 *{username}*\nБаланс: *{balance}* монет",
-            parse_mode="Markdown",
+            f'<tg-emoji emoji-id="5280818098960611598">🤑</tg-emoji> <b>{username}</b>\nБаланс: <b>{balance}</b> монет',
+            parse_mode="HTML",
             reply_markup=keyboard
         )
         return
@@ -210,11 +215,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = build_keyboard(game, user_id)
         await msg.reply_text(
-            f"💣 *{username}*, вы начали игру минное поле!\n"
+            f"💣 <b>{username}</b>, вы начали игру минное поле!\n"
             f"💰 Ставка: {bet}\n"
             f"📈 Выигрыш: x1.0 | {bet} монет\n"
             f"⚠️ Мин на поле: {game['mines']}",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=keyboard
         )
         return
@@ -248,18 +253,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_balance(target.id, amount)
 
         await msg.reply_text(
-            f"✅ *{username}* передал *{amount}* монет → *{target_name}*\n"
+            f'<tg-emoji emoji-id="5456149049214249060">🥰</tg-emoji> <b>{username}</b> передал <b>{amount}</b> монет → <b>{target_name}</b>\n'
             f"💰 Ваш баланс: {get_balance(user_id)} монет",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
         return
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     data = query.data
     clicker_id = query.from_user.id
     clicker_name = get_name(query.from_user)
+
+    # Кнопка недоступного бонуса
+    if data.startswith("bonus_unavailable_"):
+        await query.answer("❌ Бонус уже получен сегодня! Приходи завтра.", show_alert=True)
+        return
+
+    await query.answer()
 
     # Бонус
     if data.startswith("bonus_"):
@@ -269,15 +280,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if not can_claim_bonus(owner_id):
             await query.answer("❌ Бонус уже получен сегодня! Приходи завтра.", show_alert=True)
+            # Меняем кнопку на заблокированную
+            new_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏰ Бонус уже получен — приходи завтра", callback_data=f"bonus_unavailable_{owner_id}")]
+            ])
+            await query.edit_message_reply_markup(reply_markup=new_keyboard)
             return
+
         add_balance(owner_id, BONUS_AMOUNT)
         mark_bonus_claimed(owner_id)
         balance = get_balance(owner_id)
+
+        # После получения — меняем кнопку на заблокированную
+        new_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏰ Бонус уже получен — приходи завтра", callback_data=f"bonus_unavailable_{owner_id}")]
+        ])
         await query.edit_message_text(
-            f"🎁 *{clicker_name}* получил ежедневный бонус *{BONUS_AMOUNT}* монет!\n"
-            f"💰 Баланс: *{balance}* монет\n"
+            f"🎁 <b>{clicker_name}</b> получил ежедневный бонус <b>{BONUS_AMOUNT}</b> монет!\n"
+            f"💰 Баланс: <b>{balance}</b> монет\n"
             f"⏰ Следующий бонус доступен завтра",
-            parse_mode="Markdown"
+            parse_mode="HTML",
+            reply_markup=new_keyboard
         )
         return
 
@@ -314,9 +337,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     c["revealed"] = True
             keyboard = build_keyboard(game, owner_id)
             await query.edit_message_text(
-                f"💥 *{clicker_name}*, ВЫ ВЗОРВАЛИСЬ НА МИНЕ!\n"
+                f'<tg-emoji emoji-id="5438274168422409988">😐</tg-emoji> <b>{clicker_name}</b>, ВЫ ВЗОРВАЛИСЬ НА МИНЕ!\n'
                 f"❌ Ставка {game['bet']} монет потеряна!",
-                parse_mode="Markdown",
+                parse_mode="HTML",
                 reply_markup=keyboard
             )
             del active_games[owner_id]
@@ -331,9 +354,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 game["game_over"] = True
                 keyboard = build_keyboard(game, owner_id)
                 await query.edit_message_text(
-                    f"🏆 *{clicker_name}*, ВЫ ПОБЕДИЛИ!\n"
-                    f"💰 Выигрыш: *{winnings}* монет (x{multiplier})",
-                    parse_mode="Markdown",
+                    f'<tg-emoji emoji-id="5458394638505223612">😉</tg-emoji> <b>{clicker_name}</b>, ВЫ ПОБЕДИЛИ!\n'
+                    f"💰 Выигрыш: <b>{winnings}</b> монет (x{multiplier})",
+                    parse_mode="HTML",
                     reply_markup=keyboard
                 )
                 del active_games[owner_id]
@@ -342,11 +365,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 winnings = int(game["bet"] * multiplier)
                 keyboard = build_keyboard(game, owner_id)
                 await query.edit_message_text(
-                    f"💣 *{clicker_name}*, минное поле\n"
+                    f"💣 <b>{clicker_name}</b>, минное поле\n"
                     f"💰 Ставка: {game['bet']}\n"
                     f"📈 Выигрыш: x{multiplier} | {winnings} монет\n"
                     f"✅ Открыто: {game['revealed_count']} клеток",
-                    parse_mode="Markdown",
+                    parse_mode="HTML",
                     reply_markup=keyboard
                 )
 
@@ -372,10 +395,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         game["game_over"] = True
         keyboard = build_keyboard(game, owner_id)
         await query.edit_message_text(
-            f"💰 *{clicker_name}* забрал выигрыш!\n"
-            f"🏆 Получено: *{winnings}* монет (x{multiplier})\n"
+            f'<tg-emoji emoji-id="5458394638505223612">😉</tg-emoji> <b>{clicker_name}</b> забрал выигрыш!\n'
+            f"🏆 Получено: <b>{winnings}</b> монет (x{multiplier})\n"
             f"✅ Открыто клеток: {game['revealed_count']}",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=keyboard
         )
         del active_games[owner_id]
