@@ -101,7 +101,7 @@ def build_keyboard(game_state, user_id):
                 if cell["is_mine"]:
                     text = "💥"
                 else:
-                    text = " "   # Пустое место — без смайлика
+                    text = " "
             else:
                 text = "❓"
 
@@ -126,21 +126,23 @@ def get_name(user):
         name += f" {user.last_name}"
     return name.strip() or user.username or "Игрок"
 
+def is_group(update: Update) -> bool:
+    return update.message.chat.type in ("group", "supergroup")
+
+def is_private(update: Update) -> bool:
+    return update.message.chat.type == "private"
+
 # ====== ОБРАБОТЧИКИ ======
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    username = get_name(update.message.from_user)
-    await update.message.reply_text(
-        f"👋 Привет, *{username}*!\n\n"
-        f"🎮 *Команды:*\n"
-        f"• `б` — баланс\n"
-        f"• `Мины [сумма]` — игра минное поле\n"
-        f"• `п [сумма]` (ответом) — передать монеты\n\n"
-        f"💣 На поле 5x5 спрятано 6 мин. Удачи!",
-        parse_mode="Markdown"
-    )
+    # Молчим везде — никаких подсказок
+    pass
 
 async def handle_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Работает только в личном чате
+    if not is_private(update):
+        return
+
     user_id = update.message.from_user.id
     args = context.args
     if not args:
@@ -158,6 +160,10 @@ async def handle_admin_command(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Команды работают только в группе
+    if not is_group(update):
+        return
+
     msg = update.message
     text = msg.text.strip() if msg.text else ""
     user = msg.from_user
