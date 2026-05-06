@@ -5,7 +5,7 @@ from datetime import date
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-TOKEN = "ВАШ_ТОКЕН_СЮДА"  # <-- вставь токен от @BotFather
+TOKEN = "8679806194:AAH35zUFUYhnHWnL210bRwrcTsD_p3ZZM9A"  # <-- вставь токен от @BotFather
 
 BALANCE_FILE = "balances.json"
 BONUS_FILE = "bonuses.json"
