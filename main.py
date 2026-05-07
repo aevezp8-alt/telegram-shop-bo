@@ -367,95 +367,102 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(launch_roulette(chat_id, context))
         return
 
-    # РУЛЕТКА: СТАВКА КРАСНОЕ
-    if text_lower.startswith("к "):
-        if chat_id in spinning_chats:
-            await msg.reply_text("❌ Раунд уже идёт, подожди!")
-            return
-        parts = text.split()
-        if len(parts) < 2:
-            return
-        try:
-            amount = int(parts[1])
-        except ValueError:
-            return
-        if amount <= 0:
-            return
-        balance = get_balance(user_id)
-        if amount > balance:
-            await msg.reply_text(f"❌ Недостаточно средств! Баланс: {balance} монет")
-            return
-        set_balance(user_id, balance - amount)
-        roulette_bets.setdefault(chat_id, []).append({
-            "user_id": user_id, "username": username,
-            "type": "red", "from": None, "to": None, "amount": amount
-        })
-        await msg.reply_text(
-            f'<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji> <b>{username}</b>, ставка принята!\n'
-            f"🔴 Красное — <b>{amount}</b> монет",
-            parse_mode="HTML"
-        )
-        return
-
-    # РУЛЕТКА: СТАВКА ЧЁРНОЕ
-    if text_lower.startswith("ч "):
-        if chat_id in spinning_chats:
-            await msg.reply_text("❌ Раунд уже идёт, подожди!")
-            return
-        parts = text.split()
-        if len(parts) < 2:
-            return
-        try:
-            amount = int(parts[1])
-        except ValueError:
-            return
-        if amount <= 0:
-            return
-        balance = get_balance(user_id)
-        if amount > balance:
-            await msg.reply_text(f"❌ Недостаточно средств! Баланс: {balance} монет")
-            return
-        set_balance(user_id, balance - amount)
-        roulette_bets.setdefault(chat_id, []).append({
-            "user_id": user_id, "username": username,
-            "type": "black", "from": None, "to": None, "amount": amount
-        })
-        await msg.reply_text(
-            f'<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji> <b>{username}</b>, ставка принята!\n'
-            f"⚫️ Чёрное — <b>{amount}</b> монет",
-            parse_mode="HTML"
-        )
-        return
-
-    # РУЛЕТКА: СТАВКА ДИАПАЗОН
+    # РУЛЕТКА: СТАВКИ (одна или много за раз)
+    # Форматы:
+    #   к 500          — одна ставка красное
+    #   ч 500          — одна ставка чёрное
+    #   13-17 500      — одна ставка диапазон
+    #   500 к ч 13-17  — много ставок, первое число = сумма на каждую
     parts = text.split()
-    if len(parts) == 2:
-        rng = parse_range(parts[0])
-        if rng:
-            if chat_id in spinning_chats:
-                await msg.reply_text("❌ Раунд уже идёт, подожди!")
-                return
+    parsed_bets = []  # список (type, from, to)
+
+    # Проверяем формат: первое слово — число (сумма), остальное — ставки
+    if len(parts) >= 2:
+        try:
+            multi_amount = int(parts[0])
+            if multi_amount > 0:
+                tokens = parts[1:]
+                candidate_bets = []
+                valid = True
+                for token in tokens:
+                    tl = token.lower()
+                    if tl == "к":
+                        candidate_bets.append(("red", None, None))
+                    elif tl == "ч":
+                        candidate_bets.append(("black", None, None))
+                    else:
+                        rng = parse_range(token)
+                        if rng:
+                            candidate_bets.append(("range", rng[0], rng[1]))
+                        else:
+                            valid = False
+                            break
+                if valid and candidate_bets:
+                    parsed_bets = candidate_bets
+        except ValueError:
+            pass
+
+    # Одиночные форматы: к 500 / ч 500 / 13-17 500
+    if not parsed_bets and len(parts) == 2:
+        tl = parts[0].lower()
+        if tl == "к":
             try:
-                amount = int(parts[1])
+                multi_amount = int(parts[1])
+                if multi_amount > 0:
+                    parsed_bets = [("red", None, None)]
             except ValueError:
-                return
-            if amount <= 0:
-                return
-            balance = get_balance(user_id)
-            if amount > balance:
-                await msg.reply_text(f"❌ Недостаточно средств! Баланс: {balance} монет")
-                return
-            set_balance(user_id, balance - amount)
-            roulette_bets.setdefault(chat_id, []).append({
-                "user_id": user_id, "username": username,
-                "type": "range", "from": rng[0], "to": rng[1], "amount": amount
-            })
+                pass
+        elif tl == "ч":
+            try:
+                multi_amount = int(parts[1])
+                if multi_amount > 0:
+                    parsed_bets = [("black", None, None)]
+            except ValueError:
+                pass
+        else:
+            rng = parse_range(parts[0])
+            if rng:
+                try:
+                    multi_amount = int(parts[1])
+                    if multi_amount > 0:
+                        parsed_bets = [("range", rng[0], rng[1])]
+                except ValueError:
+                    pass
+
+    if parsed_bets:
+        if chat_id in spinning_chats:
+            await msg.reply_text("❌ Раунд уже идёт, подожди!")
+            return
+        total_cost = multi_amount * len(parsed_bets)
+        balance = get_balance(user_id)
+        if total_cost > balance:
             await msg.reply_text(
-                f'<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji> <b>{username}</b>, ставка принята!\n'
-                f"🎯 <b>{rng[0]}-{rng[1]}</b> — <b>{amount}</b> монет",
+                f"❌ Недостаточно средств!\n"
+                f"Нужно: <b>{total_cost}</b> монет | Баланс: <b>{balance}</b> монет",
                 parse_mode="HTML"
             )
             return
+        set_balance(user_id, balance - total_cost)
+        for btype, bfrom, bto in parsed_bets:
+            roulette_bets.setdefault(chat_id, []).append({
+                "user_id": user_id, "username": username,
+                "type": btype, "from": bfrom, "to": bto, "amount": multi_amount
+            })
+        # Формируем подтверждение
+        desc_lines = []
+        for btype, bfrom, bto in parsed_bets:
+            if btype == "red":
+                desc_lines.append(f"🔴 Красное")
+            elif btype == "black":
+                desc_lines.append(f"⚫️ Чёрное")
+            else:
+                desc_lines.append(f"🎯 {bfrom}-{bto}")
+        await msg.reply_text(
+            f'<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji> <b>{username}</b>, ставки приняты!\n'
+            f"💰 По <b>{multi_amount}</b> монет на каждую:\n" + "\n".join(desc_lines),
+            parse_mode="HTML"
+        )
+        return
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
