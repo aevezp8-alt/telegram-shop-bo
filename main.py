@@ -127,6 +127,12 @@ def add_log(chat_id, number, color):
 
 def parse_range(text):
     try:
+        # Одно число: "15" -> (15, 15)
+        if text.isdigit():
+            a = int(text)
+            if 1 <= a <= 34:
+                return a, a
+        # Диапазон: "13-17" -> (13, 17)
         parts = text.split("-")
         if len(parts) == 2:
             a, b = int(parts[0]), int(parts[1])
