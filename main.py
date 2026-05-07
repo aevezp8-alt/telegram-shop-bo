@@ -99,9 +99,31 @@ def build_keyboard(game_state, user_id):
 RED_NUMBERS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34}
 BLACK_NUMBERS = {n for n in range(1, 35) if n not in RED_NUMBERS}
 STICKER_PACK = "IrisAdvanceRoulette"
+LOG_FILE = "roulette_log.json"
 
 roulette_bets = {}   # chat_id -> list of bets (постоянно, до запуска)
 spinning_chats = set()  # chat_id где сейчас крутится
+
+def load_log(chat_id):
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r") as f:
+            data = json.load(f)
+        return data.get(str(chat_id), [])
+    return []
+
+def save_log(chat_id, entries):
+    data = {}
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r") as f:
+            data = json.load(f)
+    data[str(chat_id)] = entries[-10:]  # храним последние 10
+    with open(LOG_FILE, "w") as f:
+        json.dump(data, f)
+
+def add_log(chat_id, number, color):
+    entries = load_log(chat_id)
+    entries.append({"number": number, "color": color})
+    save_log(chat_id, entries)
 
 def parse_range(text):
     try:
@@ -173,6 +195,8 @@ async def launch_roulette(chat_id, context: ContextTypes.DEFAULT_TYPE):
                 winners.append((uname, amount, winnings))
             else:
                 losers.append((uname, amount))
+
+    add_log(chat_id, result, result_color)
 
     lines = [f"🎰 Выпало: <b>{result}</b> {result_color_text}\n"]
     for uname, _, won_amt in winners:
@@ -295,6 +319,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 Ваш баланс: {get_balance(user_id)} монет",
             parse_mode="HTML"
         )
+        return
+
+    # ЛОГ
+    if text_lower == "лог":
+        entries = load_log(chat_id)
+        if not entries:
+            await msg.reply_text("📋 Лог пуст — ещё не было раундов!")
+            return
+        lines = ["📋 <b>Последние раунды:</b>\n"]
+        for e in reversed(entries):
+            emoji = "🔴" if e["color"] == "red" else "⚫️"
+            lines.append(f"{e['number']}{emoji}")
+        await msg.reply_text("\n".join(lines), parse_mode="HTML")
         return
 
     # РУЛЕТКА: ОТМЕНА СТАВОК
