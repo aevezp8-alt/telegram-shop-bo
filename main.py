@@ -46,8 +46,7 @@ def save_bonuses(bonuses):
 
 def can_claim_bonus(user_id):
     bonuses = load_bonuses()
-    last = bonuses.get(str(user_id))
-    return last != str(date.today())
+    return bonuses.get(str(user_id)) != str(date.today())
 
 def mark_bonus_claimed(user_id):
     bonuses = load_bonuses()
@@ -84,26 +83,25 @@ def build_keyboard(game_state, user_id):
         for col in range(size):
             idx = row * size + col
             cell = board[idx]
-            if cell["revealed"]:
-                text = "💥" if cell["is_mine"] else " "
-            else:
-                text = "❓"
+            text = ("💥" if cell["is_mine"] else " ") if cell["revealed"] else "❓"
             keyboard_row.append(InlineKeyboardButton(text, callback_data=f"mine_{user_id}_{idx}"))
         keyboard.append(keyboard_row)
     if not game_state["game_over"]:
-        multiplier = get_multiplier(game_state["revealed_count"], game_state["mines"], size * size)
-        winnings = int(game_state["bet"] * multiplier)
+        mult = get_multiplier(game_state["revealed_count"], game_state["mines"], size * size)
+        winnings = int(game_state["bet"] * mult)
         keyboard.append([InlineKeyboardButton(f"💰 Забрать выигрыш ({winnings} монет)", callback_data=f"cashout_{user_id}")])
     return InlineKeyboardMarkup(keyboard)
 
 # ====== РУЛЕТКА ======
+# Ставки хранятся ГЛОБАЛЬНО по chat_id — можно ставить в любое время
+# chat_id -> {"bets": [{"user_id", "username", "type", "from", "to", "amount"}], "spinning": bool}
 
 RED_NUMBERS = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34}
 BLACK_NUMBERS = {n for n in range(1, 35) if n not in RED_NUMBERS}
 STICKER_PACK = "IrisAdvanceRoulette"
-ROULETTE_WAIT = 6
 
-roulette_sessions = {}
+roulette_bets = {}   # chat_id -> list of bets (постоянно, до запуска)
+spinning_chats = set()  # chat_id где сейчас крутится
 
 def parse_range(text):
     try:
@@ -116,26 +114,13 @@ def parse_range(text):
         pass
     return None
 
-async def run_roulette(chat_id, context: ContextTypes.DEFAULT_TYPE):
-    await asyncio.sleep(ROULETTE_WAIT)
-
-    session = roulette_sessions.get(chat_id)
-    if not session or not session["bets"]:
-        roulette_sessions.pop(chat_id, None)
-        return
-
-    bets = session["bets"]
-    roulette_sessions.pop(chat_id, None)
-
-    try:
-        if session.get("info_msg"):
-            await session["info_msg"].delete()
-    except:
-        pass
+async def launch_roulette(chat_id, context: ContextTypes.DEFAULT_TYPE):
+    bets = roulette_bets.pop(chat_id, [])
+    spinning_chats.discard(chat_id)
 
     result = random.randint(1, 34)
     result_color = "red" if result in RED_NUMBERS else "black"
-    result_color_emoji = "🔴" if result_color == "red" else "⚫️"
+    result_color_text = "🔴 Красное" if result_color == "red" else "⚫️ Чёрное"
 
     try:
         sticker_set = await context.bot.get_sticker_set(STICKER_PACK)
@@ -159,25 +144,13 @@ async def run_roulette(chat_id, context: ContextTypes.DEFAULT_TYPE):
         uname = bet["username"]
         amount = bet["amount"]
         btype = bet["type"]
-        won = False
 
         if btype == "range":
             won = bet["from"] <= result <= bet["to"]
             if won:
-                range_size = bet["to"] - bet["from"] + 1
-                if range_size == 1:
-                    multiplier = 34.0
-                elif range_size <= 3:
-                    multiplier = 10.0
-                elif range_size <= 6:
-                    multiplier = 5.0
-                elif range_size <= 10:
-                    multiplier = 3.0
-                elif range_size <= 17:
-                    multiplier = 2.0
-                else:
-                    multiplier = 1.5
-                winnings = int(amount * multiplier)
+                rsize = bet["to"] - bet["from"] + 1
+                mult = 34.0 if rsize == 1 else 10.0 if rsize <= 3 else 5.0 if rsize <= 6 else 3.0 if rsize <= 10 else 2.0 if rsize <= 17 else 1.5
+                winnings = int(amount * mult)
                 add_balance(uid, winnings)
                 winners.append((uname, amount, winnings))
             else:
@@ -201,14 +174,11 @@ async def run_roulette(chat_id, context: ContextTypes.DEFAULT_TYPE):
             else:
                 losers.append((uname, amount))
 
-    lines = [f"🎰 Выпало: <b>{result}</b> {result_color_emoji}\n"]
-
-    if winners:
-        for uname, bet_amt, won_amt in winners:
-            lines.append(f'<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji> {uname} +{won_amt}')
-    if losers:
-        for uname, bet_amt in losers:
-            lines.append(f'<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> {uname} -{bet_amt}')
+    lines = [f"🎰 Выпало: <b>{result}</b> {result_color_text}\n"]
+    for uname, _, won_amt in winners:
+        lines.append(f'<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji> {uname} +{won_amt}')
+    for uname, bet_amt in losers:
+        lines.append(f'<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> {uname} -{bet_amt}')
 
     await context.bot.send_message(chat_id=chat_id, text="\n".join(lines), parse_mode="HTML")
 
@@ -256,6 +226,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     username = get_name(user)
     text_lower = text.lower()
+    chat_id = msg.chat.id
 
     # БАЛАНС
     if text_lower == "б":
@@ -326,8 +297,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # РУЛЕТКА КРАСНОЕ
+    # РУЛЕТКА: ОТМЕНА СТАВОК
+    if text_lower == "отмена":
+        if chat_id in spinning_chats:
+            await msg.reply_text("❌ Раунд уже идёт, отменить нельзя!")
+            return
+        bets = roulette_bets.get(chat_id, [])
+        user_bets = [b for b in bets if b["user_id"] == user_id]
+        if not user_bets:
+            await msg.reply_text("❌ У тебя нет активных ставок!")
+            return
+        refund = sum(b["amount"] for b in user_bets)
+        roulette_bets[chat_id] = [b for b in bets if b["user_id"] != user_id]
+        add_balance(user_id, refund)
+        await msg.reply_text(
+            f'<tg-emoji emoji-id="5456149049214249060">🥰</tg-emoji> <b>{username}</b>, ставки отменены!\n'
+            f"💰 Возвращено: <b>{refund}</b> монет",
+            parse_mode="HTML"
+        )
+        return
+
+    # РУЛЕТКА: ГО — запуск
+    if text_lower == "го":
+        if chat_id in spinning_chats:
+            await msg.reply_text("❌ Раунд уже идёт!")
+            return
+        bets = roulette_bets.get(chat_id, [])
+        if not bets:
+            await msg.reply_text("❌ Нет ставок!")
+            return
+        spinning_chats.add(chat_id)
+        asyncio.create_task(launch_roulette(chat_id, context))
+        return
+
+    # РУЛЕТКА: СТАВКА КРАСНОЕ
     if text_lower.startswith("к "):
+        if chat_id in spinning_chats:
+            await msg.reply_text("❌ Раунд уже идёт, подожди!")
+            return
         parts = text.split()
         if len(parts) < 2:
             return
@@ -342,11 +349,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(f"❌ Недостаточно средств! Баланс: {balance} монет")
             return
         set_balance(user_id, balance - amount)
-        await _add_roulette_bet(msg, context, user_id, username, "red", None, None, amount)
+        roulette_bets.setdefault(chat_id, []).append({
+            "user_id": user_id, "username": username,
+            "type": "red", "from": None, "to": None, "amount": amount
+        })
+        await msg.reply_text(
+            f'<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji> <b>{username}</b>, ставка принята!\n'
+            f"🔴 Красное — <b>{amount}</b> монет",
+            parse_mode="HTML"
+        )
         return
 
-    # РУЛЕТКА ЧЁРНОЕ
+    # РУЛЕТКА: СТАВКА ЧЁРНОЕ
     if text_lower.startswith("ч "):
+        if chat_id in spinning_chats:
+            await msg.reply_text("❌ Раунд уже идёт, подожди!")
+            return
         parts = text.split()
         if len(parts) < 2:
             return
@@ -361,14 +379,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(f"❌ Недостаточно средств! Баланс: {balance} монет")
             return
         set_balance(user_id, balance - amount)
-        await _add_roulette_bet(msg, context, user_id, username, "black", None, None, amount)
+        roulette_bets.setdefault(chat_id, []).append({
+            "user_id": user_id, "username": username,
+            "type": "black", "from": None, "to": None, "amount": amount
+        })
+        await msg.reply_text(
+            f'<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji> <b>{username}</b>, ставка принята!\n'
+            f"⚫️ Чёрное — <b>{amount}</b> монет",
+            parse_mode="HTML"
+        )
         return
 
-    # РУЛЕТКА ДИАПАЗОН
+    # РУЛЕТКА: СТАВКА ДИАПАЗОН
     parts = text.split()
     if len(parts) == 2:
         rng = parse_range(parts[0])
         if rng:
+            if chat_id in spinning_chats:
+                await msg.reply_text("❌ Раунд уже идёт, подожди!")
+                return
             try:
                 amount = int(parts[1])
             except ValueError:
@@ -380,58 +409,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text(f"❌ Недостаточно средств! Баланс: {balance} монет")
                 return
             set_balance(user_id, balance - amount)
-            await _add_roulette_bet(msg, context, user_id, username, "range", rng[0], rng[1], amount)
+            roulette_bets.setdefault(chat_id, []).append({
+                "user_id": user_id, "username": username,
+                "type": "range", "from": rng[0], "to": rng[1], "amount": amount
+            })
+            await msg.reply_text(
+                f'<tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji> <b>{username}</b>, ставка принята!\n'
+                f"🎯 <b>{rng[0]}-{rng[1]}</b> — <b>{amount}</b> монет",
+                parse_mode="HTML"
+            )
             return
-
-async def _add_roulette_bet(msg, context, user_id, username, btype, from_n, to_n, amount):
-    chat_id = msg.chat.id
-
-    bet = {"user_id": user_id, "username": username, "type": btype, "from": from_n, "to": to_n, "amount": amount}
-
-    if btype == "range":
-        bet_desc = f"{from_n}-{to_n}"
-    elif btype == "red":
-        bet_desc = "🔴 Красное"
-    else:
-        bet_desc = "⚫️ Чёрное"
-
-    if chat_id not in roulette_sessions:
-        info_msg = await msg.reply_text(
-            f"🎰 Раунд через <b>{ROULETTE_WAIT} сек</b>\n\n"
-            f"✅ {username} — <b>{amount}</b> на {bet_desc}",
-            parse_mode="HTML"
-        )
-        roulette_sessions[chat_id] = {
-            "bets": [bet],
-            "info_msg": info_msg,
-            "task": asyncio.create_task(run_roulette(chat_id, context))
-        }
-    else:
-        roulette_sessions[chat_id]["bets"].append(bet)
-        all_bets = roulette_sessions[chat_id]["bets"]
-        lines = [f"🎰 Раунд через <b>{ROULETTE_WAIT} сек</b>\n"]
-        for b in all_bets:
-            if b["type"] == "range":
-                desc = f"{b['from']}-{b['to']}"
-            elif b["type"] == "red":
-                desc = "🔴 Красное"
-            else:
-                desc = "⚫️ Чёрное"
-            lines.append(f"✅ {b['username']} — <b>{b['amount']}</b> на {desc}")
-        try:
-            await roulette_sessions[chat_id]["info_msg"].edit_text("\n".join(lines), parse_mode="HTML")
-        except:
-            pass
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
     clicker_id = query.from_user.id
     clicker_name = get_name(query.from_user)
-
-    if data.startswith("bonus_unavailable_"):
-        await query.answer("❌ Бонус уже получен сегодня! Приходи завтра.", show_alert=True)
-        return
 
     await query.answer()
 
@@ -495,28 +488,27 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             game["revealed_count"] += 1
             safe_cells = size * size - game["mines"]
-
             if game["revealed_count"] >= safe_cells:
-                multiplier = get_multiplier(game["revealed_count"], game["mines"], size * size)
-                winnings = int(game["bet"] * multiplier)
+                mult = get_multiplier(game["revealed_count"], game["mines"], size * size)
+                winnings = int(game["bet"] * mult)
                 add_balance(owner_id, winnings)
                 game["game_over"] = True
                 keyboard = build_keyboard(game, owner_id)
                 await query.edit_message_text(
                     f'<tg-emoji emoji-id="5458394638505223612">😉</tg-emoji> <b>{clicker_name}</b>, победа!\n'
-                    f"💰 Выигрыш: <b>{winnings}</b> монет (x{multiplier})",
+                    f"💰 Выигрыш: <b>{winnings}</b> монет (x{mult})",
                     parse_mode="HTML",
                     reply_markup=keyboard
                 )
                 del active_games[owner_id]
             else:
-                multiplier = get_multiplier(game["revealed_count"], game["mines"], size * size)
-                winnings = int(game["bet"] * multiplier)
+                mult = get_multiplier(game["revealed_count"], game["mines"], size * size)
+                winnings = int(game["bet"] * mult)
                 keyboard = build_keyboard(game, owner_id)
                 await query.edit_message_text(
                     f"💣 <b>{clicker_name}</b>, минное поле\n"
                     f"💰 Ставка: {game['bet']}\n"
-                    f"📈 Выигрыш: x{multiplier} | {winnings} монет",
+                    f"📈 Выигрыш: x{mult} | {winnings} монет",
                     parse_mode="HTML",
                     reply_markup=keyboard
                 )
@@ -529,21 +521,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if owner_id not in active_games:
             await query.answer("❌ Игра не найдена!", show_alert=True)
             return
-
         game = active_games[owner_id]
         if game["revealed_count"] == 0:
             await query.answer("❌ Сначала открой хотя бы одну клетку!", show_alert=True)
             return
-
         size = game["size"]
-        multiplier = get_multiplier(game["revealed_count"], game["mines"], size * size)
-        winnings = int(game["bet"] * multiplier)
+        mult = get_multiplier(game["revealed_count"], game["mines"], size * size)
+        winnings = int(game["bet"] * mult)
         add_balance(owner_id, winnings)
         game["game_over"] = True
         keyboard = build_keyboard(game, owner_id)
         await query.edit_message_text(
             f'<tg-emoji emoji-id="5458394638505223612">😉</tg-emoji> <b>{clicker_name}</b> забрал выигрыш!\n'
-            f"🏆 Получено: <b>{winnings}</b> монет (x{multiplier})",
+            f"🏆 Получено: <b>{winnings}</b> монет (x{mult})",
             parse_mode="HTML",
             reply_markup=keyboard
         )
